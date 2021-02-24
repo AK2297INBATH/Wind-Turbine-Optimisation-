@@ -1,0 +1,185 @@
+B1 - WTInducedCalcs.m
+
+function [aOUT, adashOUT, phi, Cn, Ct] = WTInducedCalcs(a, adash, V0, omega, y, theta, Chord, B)
+%1: SINGLE ELEMENT: uses an iterative solution to find the values of a,
+% adash, phi, Cn and Ct at a particular radius.
+%Constants and calculated variables
+density = 1.225;
+u = 1.781e-5;
+sigma = (B*Chord)/(2*pi*y);
+R = 20;
+%Calculate the angle phi
+phi= atan(((1-a).*V0)/((1+adash)*omega*y));
+% Prandtls Tip Loss Factor
+f = (B / 2) * ((R - y) / (y * sin(phi)));
+F = (2 / pi) * acos(exp(- f));
+%Calculate the angle alpha
+Alpha = phi - theta;
+%Calculate the Velocity that Aerofoil sees
+VREL = ((V0*(1-a))^2 + (omega*y*(1+adash))^2)^0.5;
+save ('VREL.mat','VREL')
+%Calculate the Reynolds Number (Re)
+Re = (density * VREL * Chord)/u ;
+%Get lift and drag coefficients
+[Cl, Cd] = ForceCoefficient(Alpha, Re);
+%Convert to Normal (Cn) and Tangential (Ct) Values
+Cn = Cl* cos(phi) + Cd * sin(phi);
+Ct = Cl * sin(phi) - Cd * cos(phi);
+%Calculate new a and a'
+% Note : Remove 'F' to calculate without Prandtls Factor
+aOUT = 1/(((4*F*sin(phi)^2)/(sigma*Cn))+1);
+adashOUT= 1/ (((4*F*sin(phi)*cos(phi))/(sigma*Ct))-1);
+% Glauert correction
+ac = 0.2;
+if a > ac
+K = ( 4 * F * (sin(phi))^2 ) / (sigma * Cn);
+a = 1/2 * ( 2 + K*(1 - 2*ac) - sqrt( K * ((1 - 2*ac)+2)^2 + 4*(K * ac^2 - 1)) );
+end
+%if a and adash are outside a specified tolerance , loop back to step 2
+%with the new values.
+Error = abs(aOUT-a)+abs(adashOUT-adash);
+if Error > 0.0001
+aOUT = a ;
+adashOUT = adash ;
+[aOUT , adashOUT, phi, Cn, Ct] = WTInducedCalcs(a, adash, V0, omega, y, theta,
+Chord, B);
+end
+
+end
+
+
+
+
+B2 - WTSingleVelocity.m
+
+function [MT, MN] = WTSingleVelocity(V0, Theta0, ThetaTwist, MeanChord, ChordGrad,TipRadius,RootRadius, omega, B)
+%2: WHOLE ROTOR - loop WTInducedCalcs to find the values for all radii,
+%then integrate these to get the normal and tangential moment at the blade
+%root.
+MT = 0;
+MN = 0;
+delta_y = 0.1; %Increment step value along the radius
+density = 1.225; %kg/m^3
+%Calculate the Torque and Normal Moment along the radii for a single
+%velocity
+for y = RootRadius:delta_y:TipRadius
+R = TipRadius - RootRadius;
+Chord = MeanChord + (y-(R/2))*ChordGrad;
+Theta = Theta0 + y*ThetaTwist;
+a = 0;
+adash = 0;
+[aOUT, adashOUT, phi, Cn, Ct] = WTInducedCalcs(a, adash, V0, omega, y, Theta,
+Chord, B);
+
+VREL = ((V0*(1-a))^2 + (omega*y*(1-adash))^2)^0.5;
+MT = MT + (0.5*density*((VREL)^2)*Chord*Ct)*delta_y*y;
+MN = MN + (0.5*density*((VREL)^2)*Chord*Cn)*delta_y*y;
+
+end
+end
+
+
+
+
+B3 - WTVelocityRange.m
+
+function [Diff] = WTVelocityRange (Theta0, ThetaTwist, ChordGrad, delta_V0,
+delta_y, A, k, omega, MeanChord, TipRadius, RootRadius, B, MinV0, MaxV0)
+%3: ANNUAL ENERGY - loop WTSingleVelocity to find the moments across the
+%entire velocity range. Combine this with the frequency information to get
+%the AEP.
+MT=0;
+MN=0;
+P = 0;
+i = 1;
+for V0 = MinV0 : delta_V0: MaxV0
+[MT_this,~]= WTSingleVelocity(V0, Theta0, ThetaTwist, MeanChord, ChordGrad,
+TipRadius,RootRadius, omega, B);
+MT(i) = MT_this;
+P(i) =(MT_this*B*omega); %Mulitply by B and Omega to obtain Proposed Turbine Power
+i = i + 1;
+end
+V0 = MinV0 :delta_V0: MaxV0;
+%Calculate Probability of a certain windspeed range
+Probability = exp(-(V0/A).^k) - exp (-((V0+delta_V0)/A).^k);
+%Proposed Wind Turbine AEP
+AEP = P .* Probability * 8760;
+%Calculate the Ideal AEP (Betz Limit)
+P_BETZ = (16/27) * (0.5*density*(V0).^3*(pi * TipRadius ^ 2));
+AEP_BETZ = P_BETZ .*Probability* 8760;
+%Plots the Power-Velocity Graph
+figure;
+x_values = V0;
+y1= P ;
+plot(x_values, y1);
+title('Power against wind velocity');
+hold on
+y2= P_BETZ ;
+plot (x_values, y2);
+hold off
+%Plots the Probability-Velocity
+figure;
+x_values = V0;
+y1 = Probability;
+plot(x_values, y1);
+title('Probability against wind velocity');
+%Plots the AEP-Velocity
+figure;
+x_values = V0;
+y1 = AEP;
+save('AEP.mat', 'AEP');
+plot(x_values, y1);
+title('AEP against wind velocity');
+hold on
+y2 = AEP_BETZ;
+save('AEP_BETZ.mat' , 'AEP_BETZ');
+plot (x_values, y2);
+hold off
+%Calculate the Difference in the Ideal and Real AEP
+Diff = sum(AEP_BETZ) - sum(AEP);
+end
+
+
+
+
+B4 - WTOptimisation.m
+
+function [Diff] = WTOptimisation(variables)
+%4: OPTIMISATION - use fminsearchbnd to optimise ?0, ?tw, and cgrad for
+%maximum AEP
+Theta0 = variables(1);
+ThetaTwist = variables(2);
+ChordGrad = variables(3);
+%Define the values below;
+[Diff] = WTVelocityRange(Theta0, ThetaTwist, ChordGrad, 1, 0.1, 7, 1.8, pi, 1, 20,
+1, 3, 5, 25);
+disp(['Values are ',num2str(rad2deg(Theta0)),',',num2str(rad2deg(ThetaTwist)),',',num2str((ChordGrad))]);
+end
+
+
+
+
+B5 - MyOptimise.m
+
+%Initial guesses
+Theta0 = deg2rad(6);
+ThetaTwist = deg2rad(-0.5);
+ChordGrad = 0;
+%LOWER BOUNDS
+Theta0LB = deg2rad(4);
+ThetaTwistLB = deg2rad(-0.75);
+ChordGradLB = -0.01;
+%UPPER BOUNDS
+Theta0UB = deg2rad(15);
+ThetaTwistUB = deg2rad(-0.3);
+ChordGradUB = 0.01 ;
+%Call in the fminsearchbnd
+[Optimal] = fminsearchbnd(@WTOptimisation, [Theta0 ThetaTwist ChordGrad], [Theta0LB
+ThetaTwistLB ChordGradLB], [Theta0UB ThetaTwistUB ChordGradUB]);
+disp(Optimal);
+% To find AEP, subtract again from AEP Betz
+Diff = WTOptimisation(Optimal);
+%1.9613e+09 is the AEP(BETZ)
+AEP = 1.9613e+09 - Diff;
+disp(['Values are',num2str(rad2deg(Optimal(1))),',',num2str(rad2deg(Optimal(2))),',
+',num2str(Optimal(3)), ' with an AEP of ' num2str(AEP)]);
